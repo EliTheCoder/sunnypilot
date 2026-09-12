@@ -5,10 +5,14 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import numpy as np
+
 from openpilot.cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -16,9 +20,13 @@ from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_assist 
 from openpilot.sunnypilot.selfdrive.controls.lib.speed_limit.speed_limit_resolver import SpeedLimitResolver
 from openpilot.sunnypilot.selfdrive.selfdrived.events import EventsSP
 from openpilot.sunnypilot.models.helpers import get_active_bundle
+from openpilot.sunnypilot.selfdrive.car.cruise_button_control.controller import CruiseButtonController
+from openpilot.sunnypilot.selfdrive.car.cruise_button_control.mpc import MS_TO_MPH, MpcConfig
+from openpilot.sunnypilot.selfdrive.car.cruise_button_control.plant import PlantParams
 
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
+SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
 
 
 class LongitudinalPlannerSP:
@@ -35,6 +43,17 @@ class LongitudinalPlannerSP:
 
     self.output_v_target = 0.
     self.output_a_target = 0.
+
+    # Cruise button planner. It lives here rather than in selfdrived because the
+    # solve costs ~32ms on device and selfdrived runs at 100Hz -- running it there
+    # blew the 10ms budget and raised "system lagging" alerts on the road. plannerd
+    # ticks at the 20Hz model rate, and the speed trajectory it plans against is
+    # produced right here.
+    self.cruise_button_mpc = None
+    if Params().get_bool("CruiseButtonMpc"):
+      self.cruise_button_mpc = CruiseButtonController(PlantParams(), MpcConfig())
+    self.cruise_button = SendButtonState.none
+    self._cb_t = 0.0
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -73,10 +92,49 @@ class LongitudinalPlannerSP:
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
 
+  def update_cruise_button(self, sm: messaging.SubMaster) -> None:
+    """Plan the next cruise button press against the unrounded speed trajectory."""
+    if self.cruise_button_mpc is None:
+      return
+
+    cfg = self.cruise_button_mpc.cfg
+    cs = sm['carState']
+    cc = sm['carControl']
+
+    # v_desired_trajectory lives on the parent LongitudinalPlanner (this class is
+    # its base). It is one cycle old here because the MPC solves it after this runs
+    # -- 50ms of staleness against a 0.8s plant deadtime, which is immaterial.
+    speeds = getattr(self, 'v_desired_trajectory', None)
+    if speeds is None or len(speeds) < 2:
+      self.cruise_button = SendButtonState.none
+      return
+
+    # The trajectory is non-uniform and spans 2.5s; resample onto the planner grid
+    # and hold the final speed past the end of the plan rather than extrapolating.
+    plan_t = np.array(ModelConstants.T_IDXS[:len(speeds)], dtype=np.float64)
+    grid = np.arange(cfg.n_steps) * cfg.dt
+    v_des = np.interp(grid, plan_t, np.asarray(speeds, dtype=np.float64))
+
+    self._cb_t += cfg.dt
+    ready = bool(cc.enabled and not cc.cruiseControl.override and
+                 not cc.cruiseControl.cancel and not cc.cruiseControl.resume)
+    driver_pressing = any(b.pressed for b in cs.buttonEvents)
+
+    st = self.cruise_button_mpc.update(self._cb_t, float(cs.vEgo), float(cs.aEgo),
+                                       float(cs.cruiseState.speedCluster * MS_TO_MPH),
+                                       v_des, ready=ready, driver_pressing=driver_pressing)
+    if st.action > 0:
+      self.cruise_button = SendButtonState.increase
+    elif st.action < 0:
+      self.cruise_button = SendButtonState.decrease
+    else:
+      self.cruise_button = SendButtonState.none
+
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
+    self.update_cruise_button(sm)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
     plan_sp_send = messaging.new_message('longitudinalPlanSP')
@@ -88,6 +146,7 @@ class LongitudinalPlannerSP:
     longitudinalPlanSP.vTarget = float(self.output_v_target)
     longitudinalPlanSP.aTarget = float(self.output_a_target)
     longitudinalPlanSP.events = self.events_sp.to_msg()
+    longitudinalPlanSP.cruiseButton = self.cruise_button
 
     # Dynamic Experimental Control
     dec = longitudinalPlanSP.dec

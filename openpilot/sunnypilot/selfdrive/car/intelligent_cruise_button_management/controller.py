@@ -4,18 +4,12 @@ Copyright (c) 2021-, Haibin Wen, sunnypilot, and a number of other contributors.
 This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
-import numpy as np
-
 from openpilot.cereal import custom
 from opendbc.car.structs import car
 from opendbc.car import structs, apply_hysteresis
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_CTRL
-from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.sunnypilot.selfdrive.car.cruise_button_control.controller import CruiseButtonController
-from openpilot.sunnypilot.selfdrive.car.cruise_button_control.mpc import MS_TO_MPH, MpcConfig
-from openpilot.sunnypilot.selfdrive.car.cruise_button_control.plant import PlantParams
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.helpers import get_minimum_set_speed
 from openpilot.sunnypilot.selfdrive.car.cruise_ext import CRUISE_BUTTON_TIMER, update_manual_button_timers
 
@@ -24,7 +18,6 @@ State = custom.IntelligentCruiseButtonManagement.IntelligentCruiseButtonManageme
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
 
 ALLOWED_SPEED_THRESHOLD = 1.8  # m/s, ~4 MPH
-CONTROL_N_LON = 17  # longitudinalPlan.speeds length; ModelConstants.T_IDXS[:17] spans 2.5s
 HYST_GAP = 0.0  # currently disabled; TODO-SP: might need to be brand-specific
 INACTIVE_TIMER = 0.4
 
@@ -54,14 +47,11 @@ class IntelligentCruiseButtonManagement:
 
     self.cruise_button_timers = CRUISE_BUTTON_TIMER
 
-    # Optional MPC button planner. ICBM rounds the target to whole mph before
-    # deciding anything, so a target between increments is unrepresentable; the
-    # MPC plans on the unrounded trajectory and can dither the setpoint instead.
+    # Optional MPC button planner. The decision is made in plannerd (20Hz) and
+    # arrives on longitudinalPlanSP.cruiseButton; this class only relays it. The
+    # solve costs ~32ms on device and selfdrived runs at 100Hz, so computing it
+    # here blew the 10ms budget and produced "system lagging" alerts on the road.
     self.mpc_enabled = Params().get_bool("CruiseButtonMpc")
-    self.mpc = CruiseButtonController(PlantParams(), MpcConfig()) if self.mpc_enabled else None
-    self._plan_t = np.array(ModelConstants.T_IDXS[:CONTROL_N_LON], dtype=np.float64)
-    self._mpc_t = None
-    self._frame = 0
 
   @property
   def v_cruise_equal(self) -> bool:
@@ -131,50 +121,22 @@ class IntelligentCruiseButtonManagement:
 
     self.is_ready = ready and not button_pressed
 
-  def _desired_trajectory(self, LP) -> np.ndarray | None:
-    """
-    Resample the planner's speed trajectory onto the MPC's uniform grid.
-
-    longitudinalPlan.speeds spans only 2.5s on a non-uniform time base while the
-    planner needs 4s -- below ~3s the deadtime leaves too little window for a
-    dither to pay off, so the horizon cannot simply be shortened to match. Beyond
-    2.5s the final planned speed is held: it is the plan's own steady-state
-    estimate, and the far horizon barely influences the press chosen now.
-    """
-    speeds = getattr(LP, "speeds", None)
-    if speeds is None or len(speeds) < 2:
-      return None
-    if self._mpc_t is None:
-      self._mpc_t = np.arange(self.mpc.cfg.n_steps) * self.mpc.cfg.dt
-    v = np.asarray(speeds, dtype=np.float64)
-    t = self._plan_t[:len(v)]
-    return np.interp(self._mpc_t, t, v)  # np.interp holds the edge value past t[-1]
-
-  def _run_mpc(self, CS: car.CarState, LP) -> custom.IntelligentCruiseButtonManagement.SendButtonState:
-    v_des = self._desired_trajectory(LP)
-    if v_des is None:
+  def _relay_planned_button(self, LP_SP) -> custom.IntelligentCruiseButtonManagement.SendButtonState:
+    """Relay the button planned in plannerd, gated by the same readiness rules."""
+    button = getattr(LP_SP, "cruiseButton", SendButtonState.none)
+    if not self.is_ready:
       self.state = State.inactive
       return SendButtonState.none
-
-    self._frame += 1
-    t = self._frame * DT_CTRL
-    setpoint_mph = float(CS.cruiseState.speedCluster * MS_TO_MPH)
-    driver_pressing = any(self.cruise_button_timers[k] > 0 for k in self.cruise_button_timers)
-
-    st = self.mpc.update(t, float(CS.vEgo), float(CS.aEgo), setpoint_mph, v_des,
-                         ready=self.is_ready, driver_pressing=driver_pressing)
-
-    if st.action > 0:
+    if button == SendButtonState.increase:
       self.state = State.increasing
-      return SendButtonState.increase
-    if st.action < 0:
+    elif button == SendButtonState.decrease:
       self.state = State.decreasing
-      return SendButtonState.decrease
-    self.state = State.holding if st.active else State.inactive
-    return SendButtonState.none
+    else:
+      self.state = State.holding
+    return button
 
   def run(self, CS: car.CarState, CC: car.CarControl, LP_SP: custom.LongitudinalPlanSP,
-          is_metric: bool, LP=None) -> None:
+          is_metric: bool) -> None:
     if self.CP_SP.pcmCruiseSpeed:
       return
 
@@ -183,8 +145,8 @@ class IntelligentCruiseButtonManagement:
     self.update_calculations(CS, LP_SP)
     self.update_readiness(CS, CC)
 
-    if self.mpc_enabled and LP is not None:
-      self.cruise_button = self._run_mpc(CS, LP)
+    if self.mpc_enabled:
+      self.cruise_button = self._relay_planned_button(LP_SP)
     else:
       self.cruise_button = self.update_state_machine()
 

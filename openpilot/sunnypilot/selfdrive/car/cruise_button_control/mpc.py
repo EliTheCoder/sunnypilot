@@ -40,14 +40,22 @@ class MpcConfig:
   # 8s -> 0.23mph rms on the same budget). The plant settles in ~3s, so 4s covers
   # everything that can affect the press being decided now.
   horizon: float = 4.0         # s
-  decision_dt: float = 0.25    # s between allowed setpoint changes
+  # 0.5s decisions rather than 0.25s: it halves the number of decision variables,
+  # which both shrinks the solve (32ms -> 16ms on device) and *improves* tracking,
+  # because the same sample budget converges better on a smaller search space
+  # (0.105mph rms holding between increments vs 0.128 at 0.25s).
+  decision_dt: float = 0.50    # s between allowed setpoint changes
   min_press_interval: float = 0.20  # s, hardware accepts ~6.7Hz; stay under it
   # Iterations buy convergence far more cheaply than samples: at 256 samples the
   # run-to-run cost spread is 9.1% at 2 iters, 4.8% at 3, 2.7% at 4; going to 512
   # samples at 3 iters only matches 256 at 4 for 1.5x the work.
-  n_samples: int = 256
-  n_elite: int = 24
-  n_iters: int = 4
+  # Sized for plannerd's 20Hz/50ms budget, shared with its own acados solve:
+  # this config measures ~16ms on device (~32% duty). It must never go back into
+  # selfdrived, which is 100Hz/10ms -- the original 32ms solve there was a 317%
+  # overrun and produced "system lagging" alerts on the road.
+  n_samples: int = 96
+  n_elite: int = 16
+  n_iters: int = 3
   w_speed: float = 1.0         # per (m/s)^2
   # Press cost sets the tracking-vs-button-spam tradeoff. Measured knee (see
   # tools/tune.py): 0.02 -> 0.06mph rms at 64 presses/min; 0.12 -> 0.16mph at 21/min;

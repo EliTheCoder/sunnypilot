@@ -204,6 +204,10 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  # Cruise button request, planned in plannerd. The MPC that decides it is far too
+  # slow for selfdrived's 100Hz loop (~32ms per solve against a 10ms budget), so it
+  # runs here at the 20Hz model rate and selfdrived only relays the result.
+  cruiseButton @8 :IntelligentCruiseButtonManagement.SendButtonState;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
