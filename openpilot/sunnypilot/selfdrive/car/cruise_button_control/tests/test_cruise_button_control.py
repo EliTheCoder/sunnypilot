@@ -94,6 +94,40 @@ class TestMpc(OpenpilotTestCase):
     acts = [self.mpc.plan(np.full(self.mpc.cfg.n_steps, v), v, 0.0, sp)[0] for _ in range(8)]
     assert sum(a != 0 for a in acts) <= 2
 
+  def test_ceiling_allows_holding_max_cruise_speed(self):
+    """The setpoint ceiling must clear openpilot's fastest target plus the speedo
+    offset, or the top of the usable range is silently unreachable. Guards against
+    V_CRUISE_MAX or the fitted offset drifting away from this constant."""
+    v_cruise_max_mph = 145.0 * 0.621371  # V_CRUISE_MAX kph
+    needed = v_cruise_max_mph + self.p.offset * MS_TO_MPH
+    cfg = MpcConfig()
+    msg = f"sp_max_mph={cfg.sp_max_mph} cannot hold {v_cruise_max_mph:.1f}mph"
+    assert cfg.sp_max_mph >= needed, msg + f" (needs setpoint {needed:.1f}mph)"
+
+  def test_floor_matches_car_minimum_set_speed(self):
+    """ICBM's get_minimum_set_speed() is 20mph imperial; commanding below it wastes
+    presses the cluster will refuse."""
+    assert MpcConfig().sp_min_mph == 20.0
+
+  def test_reaches_max_cruise_speed_closed_loop(self):
+    """End to end: asked for openpilot's maximum, the car must actually get there."""
+    cfg = MpcConfig()
+    c = CruiseButtonController(self.p, cfg)
+    dt = cfg.dt
+    target = (145.0 * 0.621371) * MPH_TO_MS - self.p.offset
+    v, a, sp = target - 2.0, 0.0, 88.0
+    hist = [sp]
+    for i in range(int(60 / dt)):
+      st = c.update(i * dt, v, a, sp, np.full(cfg.n_steps, target), True, False)
+      if st.action:
+        sp = st.planned_setpoint
+      hist.append(sp)
+      vv, aa = rollout(self.p, np.array([sp * MPH_TO_MS]), v, a, 0.0, dt,
+                       sp_hist=np.array(hist[:-1]) * MPH_TO_MS)
+      v, a = float(vv[0]), float(aa[0])
+    err = abs(v - target) * MS_TO_MPH
+    assert err < 0.5, f"settled {err:.2f}mph short of max cruise speed"
+
   def test_respects_setpoint_limits(self):
     cfg = MpcConfig(sp_min_mph=60.0, sp_max_mph=62.0)
     m = ButtonMpc(self.p, cfg)

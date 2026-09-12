@@ -64,8 +64,16 @@ class MpcConfig:
   # a third of the presses. Raise it if the cluster flicker is distracting.
   w_press: float = 0.12        # per press; buys smoothness, costs tracking
   w_terminal: float = 2.0
+  # The planner commands the CLUSTER setpoint, and the car settles at
+  # (setpoint - offset), so the setpoint must be able to exceed the fastest speed
+  # openpilot will ever ask for by at least the offset, plus room to dither above
+  # it. openpilot caps v_cruise at V_CRUISE_MAX = 145kph = 90.1mph and the measured
+  # offset is ~2.08mph, so holding 90.1mph needs a setpoint of ~92.2mph. A 90.0
+  # ceiling silently made the top of the range unreachable.
+  # test_ceiling_allows_holding_max_cruise_speed guards this.
+  # The floor matches ICBM's get_minimum_set_speed() for imperial units.
   sp_min_mph: float = 20.0
-  sp_max_mph: float = 90.0
+  sp_max_mph: float = 95.0
 
   @property
   def n_steps(self) -> int:
