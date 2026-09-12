@@ -91,75 +91,6 @@ class Joystick:
     return True
 
 
-class WiiRemote:
-  """
-  Wii remote used as a steering wheel.
-  Hold the remote horizontally, pointing away from you (like a steering wheel).
-  Tilt left/right to steer. Use buttons for gas/brake.
-
-  Button mapping:
-    B (trigger)  - gas (hold)
-    A            - brake (hold)
-    + (Start)    - cancel cruise
-    Home         - exit
-
-  Tilt axis: ABS_RX. If steering doesn't respond to tilt, try ABS_RY.
-  The range auto-calibrates — tilt full left and full right once after connecting.
-  """
-  ACCEL_STEP = 0.3   # gas/brake value while button is held
-
-  def __init__(self):
-    self.steer_axis = 'ABS_RX'
-    self.min_axis_value = {self.steer_axis: 0.}
-    self.max_axis_value = {self.steer_axis: 255.}
-    self.axes_values = {'gb': 0., 'steer': 0.}
-    self.axes_order = ['gb', 'steer']  # axes[0]=accel, axes[1]=steer matches joystickd
-    self.cancel = False
-    self._b_held = False
-    self._a_held = False
-
-  def update(self):
-    try:
-      joystick_event = get_gamepad()[0]
-    except (OSError, UnpluggedError):
-      self.axes_values = dict.fromkeys(self.axes_values, 0.)
-      return False
-
-    code, state = joystick_event.code, joystick_event.state
-
-    if code == 'BTN_MODE':  # Home button — exit
-      raise SystemExit
-
-    elif code == 'BTN_START':  # + button — cancel cruise
-      self.cancel = (state == 1)
-
-    elif code == 'BTN_B':  # trigger — gas
-      self._b_held = (state == 1)
-
-    elif code == 'BTN_A':  # A button — brake
-      self._a_held = (state == 1)
-
-    elif code == self.steer_axis:
-      self.max_axis_value[code] = max(state, self.max_axis_value[code])
-      self.min_axis_value[code] = min(state, self.min_axis_value[code])
-      norm = -float(np.interp(state, [self.min_axis_value[code], self.max_axis_value[code]], [-1., 1.]))
-      norm = norm if abs(norm) > 0.03 else 0.
-      self.axes_values['steer'] = EXPO * norm ** 3 + (1 - EXPO) * norm
-
-    else:
-      return False
-
-    # Update gas/brake from button state each cycle
-    if self._b_held:
-      self.axes_values['gb'] = self.ACCEL_STEP
-    elif self._a_held:
-      self.axes_values['gb'] = -self.ACCEL_STEP
-    else:
-      self.axes_values['gb'] = 0.
-
-    return True
-
-
 def send_thread(joystick):
   pm = messaging.PubMaster(['testJoystick'])
 
@@ -195,7 +126,6 @@ if __name__ == '__main__':
                                                'a PlayStation 5 DualSense controller on the comma 3X.',
                                    formatter_class=argparse.ArgumentDefaultsHelpFormatter)
   parser.add_argument('--keyboard', action='store_true', help='Use your keyboard instead of a joystick')
-  parser.add_argument('--wiimote', action='store_true', help='Use a Wii remote held like a steering wheel (pair via bluetoothctl first)')
   args = parser.parse_args()
 
   if not Params().get_bool("IsOffroad") and "ZMQ" not in os.environ:
@@ -209,19 +139,9 @@ if __name__ == '__main__':
     print('Buttons')
     print('- `R`: Resets axes')
     print('- `C`: Cancel cruise control')
-  elif args.wiimote:
-    print('Wii remote mode — hold remote horizontally like a steering wheel, pointing away from you')
-    print('Tilt left/right to steer (auto-calibrates on first full tilt)')
-    print('B (trigger): gas  |  A: brake  |  +: cancel cruise  |  Home: exit')
-    print('If steering is unresponsive, the tilt axis may need to be changed to ABS_RY in WiiRemote.__init__')
   else:
     print('Using joystick, make sure to run openpilot/cereal/messaging/bridge on your device if running over the network!')
     print('If not running on a comma device, the mapping may need to be adjusted.')
 
-  if args.wiimote:
-    joystick = WiiRemote()
-  elif args.keyboard:
-    joystick = Keyboard()
-  else:
-    joystick = Joystick()
+  joystick = Keyboard() if args.keyboard else Joystick()
   joystick_control_thread(joystick)
