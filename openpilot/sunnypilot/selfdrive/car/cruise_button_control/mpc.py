@@ -159,21 +159,24 @@ class ButtonMpc:
     if self.prev_seq is not None and len(self.prev_seq) == d:
       shifted = np.concatenate([self.prev_seq[1:], [0]])  # last plan, advanced one tick
       seeds.append(shifted)
-    seeds.append(self._feedforward_seq(v_des, sp0_mph, d))
+    feedforward = self._feedforward_seq(v_des, sp0_mph, d)
+    seeds.append(feedforward)
     seeds.append(np.zeros(d, dtype=int))
     seeds = np.array(seeds, dtype=int)
 
     # action distribution, biased to "do nothing"; refined by CEM
     probs = np.tile(np.array([0.15, 0.70, 0.15]), (d, 1))
-    best_seq, best_cost = None, np.inf
+    # Start from the feedforward rather than None: if every rollout scored NaN or
+    # the loop were configured away, falling through with no plan would crash the
+    # control path. The search can then only improve on a sane default.
+    best_seq, best_cost = feedforward.copy(), np.inf
 
     for _ in range(cfg.n_iters):
       u = self.rng.random((cfg.n_samples, d, 1))
       cum = np.cumsum(probs, axis=1)[None, :, :]
       actions = (u > cum).sum(axis=2) - 1  # -> {-1,0,1}
       actions[:len(seeds)] = seeds
-      if best_seq is not None:
-        actions[len(seeds)] = best_seq  # keep incumbent
+      actions[len(seeds)] = best_seq  # keep incumbent
 
       sp_mph = self._expand(actions, sp0_mph)
       v_pred = _rollout_batch(self.p, sp_mph * MPH_TO_MS, v0, a0, pitch, cfg.dt, hist)

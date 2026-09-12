@@ -91,7 +91,8 @@ def main():
     flat[k] = np.concatenate([w[k] for w in ws])
   flat["wid"] = np.concatenate([np.full(len(w["t"]), i) for i, w in enumerate(ws)])
   flat["seg"] = np.concatenate([np.full(len(w["t"]), w["seg"]) for w in ws])
-  np.savez_compressed(out_path, **flat)
+  np.savez_compressed(out_path, t=flat["t"], v=flat["v"], a=flat["a"], sp=flat["sp"],
+                      pitch=flat["pitch"], wid=flat["wid"], seg=flat["seg"])
   print(f"\nwrote {out_path}")
 
 
