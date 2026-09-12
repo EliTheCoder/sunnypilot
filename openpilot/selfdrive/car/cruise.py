@@ -14,6 +14,9 @@ V_CRUISE_MAX = 145
 V_CRUISE_UNSET = 255
 V_CRUISE_INITIAL = 40
 V_CRUISE_INITIAL_EXPERIMENTAL_MODE = 105
+# Headroom added to the current speed when SET seeds the set speed, so the planner
+# starts with room to accelerate rather than pinned at the speed you pressed at.
+SET_SPEED_HEADROOM_KPH = 5.0 * CV.MPH_TO_KPH
 IMPERIAL_INCREMENT = round(CV.MPH_TO_KPH, 1)  # round here to avoid rounding errors incrementing set speed
 
 ButtonEvent = car.CarState.ButtonEvent
@@ -139,8 +142,11 @@ class VCruiseHelper(VCruiseHelperSP):
         self.button_change_states[b.type.raw] = {"standstill": CS.cruiseState.standstill, "enabled": enabled}
 
   def initialize_v_cruise(self, CS, experimental_mode: bool, dynamic_experimental_control: bool) -> None:
-    # initializing is handled by the PCM
-    if self.CP.pcmCruise:
+    # Initializing is handled by the PCM only when the PCM actually owns the set
+    # speed. With ICBM the car has pcmCruise but openpilot keeps its own set speed
+    # (see update_v_cruise), so skipping here left v_cruise at V_CRUISE_UNSET on
+    # engage -- the set speed was never seeded from the current speed at all.
+    if self.CP.pcmCruise and self.CP_SP.pcmCruiseSpeed:
       return
 
     initial_experimental_mode = experimental_mode and not dynamic_experimental_control
@@ -149,6 +155,12 @@ class VCruiseHelper(VCruiseHelperSP):
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
     else:
-      self.v_cruise_kph = int(round(np.clip(CS.vEgo * CV.MS_TO_KPH, initial, V_CRUISE_MAX)))
+      # Seed slightly above the current speed. Setting exactly to vEgo leaves the
+      # planner no headroom: it can only ever hold or slow down, so any request to
+      # go faster needs a manual press. Only applied where openpilot owns the set
+      # speed; when the PCM owns it this branch is unreachable.
+      headroom = SET_SPEED_HEADROOM_KPH if not self.CP_SP.pcmCruiseSpeed else 0.0
+      target = CS.vEgo * CV.MS_TO_KPH + headroom
+      self.v_cruise_kph = int(round(np.clip(target, initial, V_CRUISE_MAX)))
 
     self.v_cruise_cluster_kph = self.v_cruise_kph

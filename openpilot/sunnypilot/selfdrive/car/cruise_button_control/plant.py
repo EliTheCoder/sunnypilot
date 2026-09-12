@@ -28,27 +28,28 @@ G = 9.81
 @dataclass
 class PlantParams:
   """
-  Defaults are FITTED to a 2019 Kia Optima non-SCC, from 533s of engaged cruise
-  across 13 windows (27-85mph), by simulation-error minimization. They are not
+  Defaults are FITTED to a 2019 Kia Optima non-SCC, from 1007s of engaged cruise
+  across 26 windows over two drives (28-85mph, grades +/-2.4deg), by
+  simulation-error minimization. They are not
   hand-chosen priors -- refit with tools/fit.py for a different car, and re-check
   the horizon in MpcConfig if the deadtime comes out much longer, since dithering
   needs usable planning window left after the delay.
 
-  Open-loop speed prediction on held-out windows: 0.19mph rms @1s, 0.29 @2s,
-  0.42 @4s, 0.52 @8s (vs 0.29/0.54/0.98/1.71 for assuming constant speed).
+  Open-loop speed prediction on held-out windows: 0.20mph rms @1s, 0.34 @2s,
+  0.51 @4s, 0.61 @8s (vs 0.37/0.70/1.23/1.96 for assuming constant speed).
   """
   deadtime: float = 0.8000   # s, setpoint change -> measurable response
-  tau: float = 1.2251        # s, first-order accel lag
-  gain: float = 0.3142       # 1/s, accel per m/s of speed error
-  offset: float = 0.9313     # m/s, setpoint reads high vs vEgo (speedo calibration)
-  k_grade: float = -0.4680    # m/s^2 per unit sin(pitch)
+  tau: float = 1.1060        # s, first-order accel lag
+  gain: float = 0.3226       # 1/s, accel per m/s of speed error
+  offset: float = 0.8781     # m/s, setpoint reads high vs vEgo (speedo calibration)
+  k_grade: float = -0.8811    # m/s^2 per unit sin(pitch)
   # Authority is strongly speed dependent: throttle authority falls with speed
   # while coast-down authority grows with it (aero drag). A single pair of
   # constants does not generalize across the speed range -- these are affine in v.
-  a_min0: float = -0.0744    # m/s^2 at v=0, coast-down authority
-  a_min_v: float = -0.01387  # m/s^2 per m/s
-  a_max0: float = 1.4750    # m/s^2 at v=0, throttle authority
-  a_max_v: float = -0.01500  # m/s^2 per m/s
+  a_min0: float = -0.0500    # m/s^2 at v=0, coast-down authority
+  a_min_v: float = -0.01464  # m/s^2 per m/s
+  a_max0: float = 0.7073    # m/s^2 at v=0, throttle authority
+  a_max_v: float = -0.01018  # m/s^2 per m/s
 
   def a_min_at(self, v):
     return np.minimum(self.a_min0 + self.a_min_v * v, -0.02)
