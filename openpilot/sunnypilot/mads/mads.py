@@ -56,7 +56,6 @@ class ModularAssistiveDrivingSystem:
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
     self.steering_mode_on_brake = read_steering_mode_param(self.CP, self.CP_SP, self.params)
     self.unified_engagement_mode = self.params.get_bool("MadsUnifiedEngagementMode")
-    self._startup_enabled = False
 
   def read_params(self):
     self.main_enabled_toggle = self.params.get_bool("MadsMainCruiseAllowed")
@@ -118,12 +117,6 @@ class ModularAssistiveDrivingSystem:
       self.lateral_mismatch_counter += 1
 
   def update_events(self, CS: structs.CarState):
-    # Auto-enable MADS on car startup so it's active without requiring a button press
-    if not self._startup_enabled and self.selfdrive.initialized:
-      if CS.cruiseState.available or self.allow_always:
-        self.events_sp.add(EventNameSP.lkasEnable)
-        self._startup_enabled = True
-
     if not self.selfdrive.enabled and self.enabled:
       if CS.standstill:
         if self.events.has(EventName.doorOpen):

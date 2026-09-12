@@ -91,7 +91,7 @@ class LongitudinalPlannerSP:
     mpc_v, mpc_a = targets[self.source]
 
     # LP_SP.vTarget (published for ICBM): use MLC's trajectory-based output when
-    # active; otherwise mirror the MPC target so non-MLC behaviour is unchanged.
+    # active; otherwise mirror the MPC target so non-MLC behavior is unchanged.
     if self.mlc.is_active:
       self.output_v_target = self.mlc.output_v_target
       self.output_a_target = self.mlc.output_a_target
