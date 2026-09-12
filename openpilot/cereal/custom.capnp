@@ -358,6 +358,10 @@ struct OnroadEventSP @0xda96579883444c35 {
     e2eChime @23;
     laneChangeRoadEdge @24;
     bigModelReady @25;
+    # Raised when the longitudinal plan asks for more deceleration than the cruise
+    # buttons can deliver. On a car without openpilot longitudinal the only decel
+    # available is coasting, so a lead braking harder than that needs the driver.
+    insufficientDecelAuthority @26;
   }
 }
 

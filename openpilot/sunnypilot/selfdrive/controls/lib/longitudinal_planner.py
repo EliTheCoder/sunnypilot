@@ -27,6 +27,15 @@ from openpilot.sunnypilot.selfdrive.car.cruise_button_control.plant import Plant
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 SendButtonState = custom.IntelligentCruiseButtonManagement.SendButtonState
+EventNameSP = custom.OnroadEventSP.EventName
+
+# The cruise buttons cannot brake -- the only deceleration available is coasting.
+# Warn when the plan needs more than that, rather than quietly closing on a lead.
+# The margin keeps borderline cases quiet, and the plan must stay unachievable for
+# DECEL_WARN_FRAMES (20Hz) so a momentary dip in the trajectory does not chime.
+DECEL_AUTHORITY_MARGIN = 0.15   # m/s^2
+DECEL_WARN_FRAMES = 10          # 0.5s at the 20Hz model rate
+DECEL_WARN_MIN_SPEED = 5.0      # m/s, no point warning at a crawl
 
 
 class LongitudinalPlannerSP:
@@ -54,6 +63,7 @@ class LongitudinalPlannerSP:
       self.cruise_button_mpc = CruiseButtonController(PlantParams(), MpcConfig())
     self.cruise_button = SendButtonState.none
     self._cb_t = 0.0
+    self._decel_short_frames = 0
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -118,6 +128,7 @@ class LongitudinalPlannerSP:
     self._cb_t += cfg.dt
     ready = bool(cc.enabled and not cc.cruiseControl.override and
                  not cc.cruiseControl.cancel and not cc.cruiseControl.resume)
+    self.update_decel_authority(ready, float(cs.vEgo))
     driver_pressing = any(b.pressed for b in cs.buttonEvents)
 
     st = self.cruise_button_mpc.update(self._cb_t, float(cs.vEgo), float(cs.aEgo),
@@ -129,6 +140,29 @@ class LongitudinalPlannerSP:
       self.cruise_button = SendButtonState.decrease
     else:
       self.cruise_button = SendButtonState.none
+
+  def update_decel_authority(self, ready: bool, v_ego: float) -> None:
+    """
+    Warn when the plan asks for more braking than coasting can provide.
+
+    The planner solves as though it can brake; on a car driven only through the
+    cruise buttons it cannot. When the two disagree the car closes on the lead and
+    the driver has to intervene, so say so instead of failing silently.
+    """
+    a_plan = getattr(self, 'a_desired_trajectory', None)
+    if not ready or a_plan is None or len(a_plan) == 0 or v_ego < DECEL_WARN_MIN_SPEED:
+      self._decel_short_frames = 0
+      return
+
+    required = float(np.min(a_plan))
+    available = float(self.cruise_button_mpc.p.a_min_at(v_ego))
+    if required < available - DECEL_AUTHORITY_MARGIN:
+      self._decel_short_frames += 1
+    else:
+      self._decel_short_frames = 0
+
+    if self._decel_short_frames >= DECEL_WARN_FRAMES:
+      self.events_sp.add(EventNameSP.insufficientDecelAuthority)
 
   def update(self, sm: messaging.SubMaster) -> None:
     self.events_sp.clear()

@@ -260,4 +260,14 @@ EVENTS_SP: dict[int, dict[str, Alert | AlertCallbackType]] = {
       AlertStatus.normal, AlertSize.small,
       Priority.LOW, VisualAlert.none, AudibleAlert.prompt, 2.),
   },
+
+  # Cruise buttons can only ask the car to coast; they cannot brake. When the plan
+  # needs more deceleration than that, say so rather than quietly falling behind.
+  EventNameSP.insufficientDecelAuthority: {
+    ET.WARNING: Alert(
+      "BRAKE",
+      "Cruise Cannot Slow Fast Enough",
+      AlertStatus.userPrompt, AlertSize.mid,
+      Priority.MID, VisualAlert.none, AudibleAlert.promptRepeat, 2.),
+  },
 }
